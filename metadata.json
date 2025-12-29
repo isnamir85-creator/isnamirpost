@@ -1,5 +1,5 @@
 {
-  "name": "Copy of Copy of 집배원 스마트 배달 가이드 (Postman Smart Helper)",
+  "name": "첨단팀  (Postman Smart Helper)",
   "description": "집배원들이 주소와 수취인 정보를 효율적으로 관리하고, 수취인 불명이나 거주 여부를 즉시 조회 및 기록할 수 있는 모바일 최적화 관리 앱입니다.",
   "requestFramePermissions": [
     "camera"
