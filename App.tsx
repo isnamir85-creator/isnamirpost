@@ -1,8 +1,20 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Plus, User, Info, Clock, AlertCircle, SearchIcon, ChevronRight, Edit3, Trash2, Building2, ChevronDown, ChevronUp, Database, ListFilter, ArrowDownAz, Users, AlertTriangle } from 'lucide-react';
+import { Search, Plus, Clock, AlertCircle, Edit3, Trash2, Building2, ChevronDown, ChevronUp, Database, ArrowDownAz, Users, AlertTriangle } from 'lucide-react';
 import { DeliveryRecord, ResidenceStatus } from './types';
 import { parseNaturalLanguageSearch, getAIInsight } from './services/geminiService';
+
+// 한글 초성 추출 유틸리티
+const getChosung = (str: string) => {
+  const cho = ["ㄱ", "ㄲ", "ㄴ", "ㄷ", "ㄸ", "ㄹ", "ㅁ", "ㅂ", "ㅃ", "ㅅ", "ㅆ", "ㅇ", "ㅈ", "ㅉ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ"];
+  let result = "";
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i) - 44032;
+    if (code > -1 && code < 11172) result += cho[Math.floor(code / 588)];
+    else result += str.charAt(i);
+  }
+  return result;
+};
 
 // 이미지 시각적 순서 (1열:좌측 -> 2열:중앙 -> 3열:우측)
 const BUILDING_ORDER = [
@@ -120,22 +132,15 @@ const INITIAL_DATA: DeliveryRecord[] = [
   { id: 'lc-2', buildingName: 'LC타워', unitNumber: '130', residentName: '백금옥 못난고양이', status: ResidenceStatus.UNKNOWN, lastUpdated: '2024-05-20' }
 ];
 
-type ViewMode = 'search' | 'database';
-type SortOption = 'name' | 'units' | 'unknown' | 'default';
+type ViewMode = 'database' | 'search';
+type SortOption = 'default' | 'name' | 'units' | 'unknown';
 
 const App: React.FC = () => {
   const [records, setRecords] = useState<DeliveryRecord[]>(() => {
     const saved = localStorage.getItem('postman_records');
     if (!saved) return INITIAL_DATA;
     try {
-      const localData = JSON.parse(saved) as DeliveryRecord[];
-      const merged = [...localData];
-      INITIAL_DATA.forEach(initial => {
-        if (!merged.find(m => m.id === initial.id)) {
-          merged.push(initial);
-        }
-      });
-      return merged;
+      return JSON.parse(saved) as DeliveryRecord[];
     } catch (e) {
       return INITIAL_DATA;
     }
@@ -145,16 +150,15 @@ const App: React.FC = () => {
   const [sortBy, setSortBy] = useState<SortOption>('default');
   const [expandedBuildings, setExpandedBuildings] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
-  const [isSearchingAI, setIsSearchingAI] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState<DeliveryRecord | null>(null);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [newRecord, setNewRecord] = useState<Partial<DeliveryRecord>>({
     status: ResidenceStatus.UNKNOWN,
     buildingName: '',
     unitNumber: '',
-    residentName: ''
+    residentName: '',
+    memo: ''
   });
-  const [aiTip, setAiTip] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem('postman_records', JSON.stringify(records));
@@ -162,11 +166,22 @@ const App: React.FC = () => {
 
   const groupedAndSortedRecords = useMemo(() => {
     const q = searchQuery.toLowerCase();
-    const filtered = records.filter(r => 
-      r.buildingName.toLowerCase().includes(q) || 
-      r.unitNumber.includes(q) || 
-      r.residentName.toLowerCase().includes(q)
-    );
+    
+    const filtered = records.filter(r => {
+      // 일반 텍스트 검색 (대소문자 무시)
+      const buildingMatch = r.buildingName.toLowerCase().includes(q);
+      const unitMatch = r.unitNumber.includes(q);
+      const nameMatch = r.residentName.toLowerCase().includes(q);
+      
+      // 초성 검색
+      const buildingChosung = getChosung(r.buildingName);
+      const nameChosung = getChosung(r.residentName);
+      
+      const buildingChoMatch = buildingChosung.includes(q);
+      const nameChoMatch = nameChosung.includes(q);
+
+      return buildingMatch || unitMatch || nameMatch || buildingChoMatch || nameChoMatch;
+    });
 
     const groups: { [key: string]: DeliveryRecord[] } = {};
     filtered.forEach(record => {
@@ -211,36 +226,6 @@ const App: React.FC = () => {
     });
   };
 
-  const handleAISearch = async () => {
-    if (!searchQuery.trim()) return;
-    setIsSearchingAI(true);
-    try {
-      const result = await parseNaturalLanguageSearch(searchQuery, records);
-      if (result.suggestedRecord) {
-        const match = records.find(r => 
-          (result.suggestedRecord?.buildingName && r.buildingName.toLowerCase().includes(result.suggestedRecord.buildingName.toLowerCase())) &&
-          (result.suggestedRecord?.unitNumber && r.unitNumber === result.suggestedRecord.unitNumber)
-        );
-        if (match) {
-          setSelectedRecord(match);
-          const tip = await getAIInsight(match);
-          setAiTip(tip);
-        } else {
-          setNewRecord({
-            ...result.suggestedRecord,
-            id: Math.random().toString(36).substr(2, 9),
-            lastUpdated: new Date().toISOString().split('T')[0]
-          });
-          setIsAddModalOpen(true);
-        }
-      }
-    } catch (error) {
-      console.error("AI Search Error:", error);
-    } finally {
-      setIsSearchingAI(false);
-    }
-  };
-
   const getStatusColor = (status: ResidenceStatus) => {
     switch (status) {
       case ResidenceStatus.UNKNOWN: return 'bg-red-50 text-red-700 border-red-100';
@@ -270,7 +255,7 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full bg-slate-50 max-w-md mx-auto relative shadow-2xl border-x overflow-hidden">
-      <header className="bg-indigo-700 text-white sticky top-0 z-20 shadow-lg transition-all duration-300">
+      <header className="bg-indigo-700 text-white sticky top-0 z-20 shadow-lg">
         <div className="p-4">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
@@ -279,12 +264,12 @@ const App: React.FC = () => {
               </div>
               <div>
                 <h1 className="text-lg font-bold leading-tight">집배원 스마트 리스트</h1>
-                <p className="text-[10px] text-indigo-200 font-medium">건물별 수취인 관리 시스템</p>
+                <p className="text-[10px] text-indigo-200 font-medium">초성 검색 지원 중 (ㄱㅁㅈ 등)</p>
               </div>
             </div>
             <button 
               onClick={() => {
-                setNewRecord({ status: ResidenceStatus.UNKNOWN, buildingName: '', unitNumber: '', residentName: '', lastUpdated: new Date().toISOString().split('T')[0] });
+                setNewRecord({ status: ResidenceStatus.UNKNOWN, buildingName: '', unitNumber: '', residentName: '', lastUpdated: new Date().toISOString().split('T')[0], memo: '' });
                 setIsAddModalOpen(true);
               }}
               className="p-2.5 bg-indigo-500 hover:bg-indigo-400 rounded-full transition-all shadow-lg active:scale-95"
@@ -293,9 +278,9 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1 animate-in fade-in slide-in-from-top-1 duration-300">
+          <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
             <button onClick={() => setSortBy('default')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all border shrink-0 ${sortBy === 'default' ? 'bg-white text-indigo-700 border-white' : 'bg-indigo-600/40 text-indigo-100 border-indigo-500/30'}`}>
-              <Clock className="w-3.5 h-3.5" /> 기본순(이미지)
+              <Clock className="w-3.5 h-3.5" /> 기본순
             </button>
             <button onClick={() => setSortBy('name')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-bold transition-all border shrink-0 ${sortBy === 'name' ? 'bg-white text-indigo-700 border-white' : 'bg-indigo-600/40 text-indigo-100 border-indigo-500/30'}`}>
               <ArrowDownAz className="w-3.5 h-3.5" /> 건물명순
@@ -311,7 +296,7 @@ const App: React.FC = () => {
           <div className="mt-3 relative">
             <input
               type="text"
-              placeholder="건물, 호수, 이름 검색..."
+              placeholder="건물, 호수, 이름(초성 가능) 검색..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-white/10 border border-white/20 rounded-2xl py-2 pl-10 pr-4 text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-white/20 transition-all text-xs"
@@ -321,76 +306,78 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      <main className="flex-1 p-4 pb-32 overflow-y-auto scroll-smooth">
-        <div className="space-y-4 animate-in fade-in duration-500">
-          {groupedAndSortedRecords.sortedBuildingKeys.map(building => {
-            const bRecords = groupedAndSortedRecords.groups[building];
-            const unknownCount = bRecords.filter(r => r.status === ResidenceStatus.UNKNOWN).length;
-            const isExpanded = expandedBuildings.has(building);
-            return (
-              <div key={building} className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100">
-                <button onClick={() => toggleBuilding(building)} className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-50 transition-colors">
-                  <div className="flex items-center gap-4">
-                    <div className="w-10 h-10 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 shrink-0"><Building2 className="w-5 h-5" /></div>
-                    <div>
-                      <h3 className="font-bold text-slate-900 leading-tight">{building}</h3>
-                      <div className="flex items-center gap-3 mt-1">
-                        <span className="text-[10px] font-bold text-slate-400">{bRecords.length}세대</span>
-                        {unknownCount > 0 && <span className="text-[10px] font-bold text-red-500 bg-red-50 px-1.5 py-0.5 rounded-md flex items-center gap-1"><AlertCircle className="w-3 h-3" /> 불명 {unknownCount}</span>}
+      <main className="flex-1 p-4 pb-32 overflow-y-auto">
+        <div className="space-y-4">
+          {groupedAndSortedRecords.sortedBuildingKeys.length > 0 ? (
+            groupedAndSortedRecords.sortedBuildingKeys.map(building => {
+              const bRecords = groupedAndSortedRecords.groups[building];
+              const unknownCount = bRecords.filter(r => r.status === ResidenceStatus.UNKNOWN).length;
+              const isExpanded = expandedBuildings.has(building) || searchQuery.length > 0; // 검색 중에는 자동 확장
+              return (
+                <div key={building} className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100">
+                  <button onClick={() => toggleBuilding(building)} className="w-full flex items-center justify-between p-5 text-left hover:bg-slate-50">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-600 shrink-0"><Building2 className="w-5 h-5" /></div>
+                      <div>
+                        <h3 className="font-bold text-slate-900 leading-tight">{building}</h3>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-[10px] font-bold text-slate-400">{bRecords.length}세대</span>
+                          {unknownCount > 0 && <span className="text-[10px] font-bold text-red-500 bg-red-50 px-1.5 py-0.5 rounded-md flex items-center gap-1"><AlertCircle className="w-3 h-3" /> 불명 {unknownCount}</span>}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="p-2 bg-slate-100 rounded-full text-slate-400 shrink-0">{isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}</div>
-                </button>
-                {isExpanded && (
-                  <div className="px-5 pb-5 pt-1 space-y-2">
-                    <div className="border-t border-slate-50 pt-4 grid grid-cols-1 gap-2">
-                      {bRecords.map(record => (
-                        <div key={record.id} onClick={() => setSelectedRecord(record)} className={`flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer ${record.status === ResidenceStatus.UNKNOWN ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-transparent'}`}>
-                          <div className="flex items-center gap-3 overflow-hidden">
-                            <span className="text-sm font-black text-slate-800 w-12 shrink-0">{record.unitNumber}</span>
-                            <span className="text-xs font-bold text-slate-600 truncate">{record.residentName}</span>
+                    <div className="p-2 bg-slate-100 rounded-full text-slate-400 shrink-0">{isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}</div>
+                  </button>
+                  {isExpanded && (
+                    <div className="px-5 pb-5 pt-1 space-y-2">
+                      <div className="border-t border-slate-50 pt-4 grid grid-cols-1 gap-2">
+                        {bRecords.map(record => (
+                          <div key={record.id} onClick={() => setSelectedRecord(record)} className={`flex items-center justify-between p-3 rounded-2xl border transition-all cursor-pointer ${record.status === ResidenceStatus.UNKNOWN ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-transparent'}`}>
+                            <div className="flex items-center gap-3 overflow-hidden">
+                              <span className="text-sm font-black text-slate-800 w-12 shrink-0">{record.unitNumber}</span>
+                              <span className="text-xs font-bold text-slate-600 truncate">{record.residentName}</span>
+                            </div>
+                            <div className={`px-2 py-0.5 rounded-lg text-[8px] font-black border shrink-0 ${getStatusColor(record.status)}`}>{record.status}</div>
                           </div>
-                          <div className={`px-2 py-0.5 rounded-lg text-[8px] font-black border shrink-0 ${getStatusColor(record.status)}`}>{record.status}</div>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                  )}
+                </div>
+              );
+            })
+          ) : (
+            <div className="text-center py-20 text-slate-400">
+              <Database className="w-12 h-12 mx-auto mb-4 opacity-20" />
+              <p className="text-sm font-bold">검색 결과가 없습니다.</p>
+            </div>
+          )}
         </div>
       </main>
 
       {selectedRecord && (
         <div className="fixed inset-0 z-30 flex items-end justify-center">
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setSelectedRecord(null)}></div>
-          <div className="relative w-full max-w-md bg-white rounded-t-[2.5rem] shadow-2xl p-8 border-t border-white/20 animate-in slide-in-from-bottom duration-300">
+          <div className="relative w-full max-w-md bg-white rounded-t-[2.5rem] shadow-2xl p-8 animate-in slide-in-from-bottom duration-300">
             <div className="w-16 h-1.5 bg-slate-200 rounded-full mx-auto mb-8"></div>
             <div className="flex items-start justify-between mb-6">
-              <div className="overflow-hidden">
-                <span className="text-xs font-bold text-indigo-500 uppercase tracking-widest block mb-1 truncate">{selectedRecord.buildingName}</span>
+              <div>
+                <span className="text-xs font-bold text-indigo-500 block mb-1">{selectedRecord.buildingName}</span>
                 <h2 className="text-3xl font-black text-slate-900">{selectedRecord.unitNumber}호</h2>
                 <div className="flex items-center gap-2 mt-2">
-                  <div className={`w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse`}></div>
-                  <span className="text-sm font-bold text-slate-600 truncate">{selectedRecord.residentName} · {selectedRecord.status}</span>
+                  <span className="text-sm font-bold text-slate-600">{selectedRecord.residentName} · {selectedRecord.status}</span>
                 </div>
               </div>
-              <div className="flex gap-2 shrink-0">
-                 <button onClick={() => {setNewRecord(selectedRecord); setIsAddModalOpen(true); setSelectedRecord(null);}} className="p-3 bg-slate-100 rounded-2xl hover:bg-slate-200"><Edit3 className="w-5 h-5" /></button>
-                 <button onClick={() => deleteRecord(selectedRecord.id)} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-100"><Trash2 className="w-5 h-5" /></button>
+              <div className="flex gap-2">
+                 <button onClick={() => {setNewRecord(selectedRecord); setIsAddModalOpen(true); setSelectedRecord(null);}} className="p-3 bg-slate-100 rounded-2xl"><Edit3 className="w-5 h-5" /></button>
+                 <button onClick={() => deleteRecord(selectedRecord.id)} className="p-3 bg-red-50 text-red-500 rounded-2xl"><Trash2 className="w-5 h-5" /></button>
               </div>
             </div>
-            <div className="bg-slate-50 rounded-3xl p-6 mb-8 border border-slate-100">
+            <div className="bg-slate-50 rounded-3xl p-6 mb-8">
               <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">배달 특이사항</h4>
-              <p className="text-slate-700 text-sm leading-relaxed">{selectedRecord.memo || '전부 안사는 사람 명단입니다. (수취인불명)'}</p>
-              <div className="mt-4 pt-4 border-t border-slate-200/50 flex items-center justify-between text-[10px] font-bold text-slate-400">
-                <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> 최종 기록</span>
-                <span>{selectedRecord.lastUpdated}</span>
-              </div>
+              <p className="text-slate-700 text-sm leading-relaxed">{selectedRecord.memo || '이 주소에 살지 않는 사람으로 확인되었습니다. (수취인불명)'}</p>
             </div>
-            <button onClick={() => setSelectedRecord(null)} className="w-full bg-slate-900 text-white font-black py-5 rounded-[2rem] active:scale-95 transition-all">확인 완료</button>
+            <button onClick={() => setSelectedRecord(null)} className="w-full bg-slate-900 text-white font-black py-5 rounded-[2rem]">닫기</button>
           </div>
         </div>
       )}
@@ -398,59 +385,66 @@ const App: React.FC = () => {
       {isAddModalOpen && (
         <div className="fixed inset-0 z-40 flex items-center justify-center p-6">
           <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-md" onClick={() => setIsAddModalOpen(false)}></div>
-          <div className="relative w-full max-w-sm bg-white rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="bg-indigo-700 p-6 text-white"><h2 className="text-xl font-black">{newRecord.id ? '기록 수정' : '새 기록 추가'}</h2></div>
-            <div className="p-8 space-y-5">
-              <div className="space-y-4">
-                <div className="relative">
-                  <label className="text-[10px] font-black text-slate-400 absolute -top-2 left-4 bg-white px-1 z-10">건물명</label>
-                  <input type="text" value={newRecord.buildingName} onChange={e => setNewRecord({...newRecord, buildingName: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 focus:outline-none font-bold text-slate-800" placeholder="예: 트레비엔" />
+          <div className="relative w-full max-w-sm bg-white rounded-[2.5rem] shadow-2xl p-8 space-y-6 animate-in zoom-in-95 duration-200">
+            <h2 className="text-xl font-black text-slate-900">{newRecord.id ? '기록 수정' : '새 기록 추가'}</h2>
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase ml-2">건물명</label>
+                <input type="text" placeholder="건물명 입력" value={newRecord.buildingName} onChange={e => setNewRecord({...newRecord, buildingName: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 outline-none font-bold" />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2">호수</label>
+                  <input type="text" placeholder="호수" value={newRecord.unitNumber} onChange={e => setNewRecord({...newRecord, unitNumber: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 outline-none font-bold" />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="relative">
-                    <label className="text-[10px] font-black text-slate-400 absolute -top-2 left-4 bg-white px-1 z-10">호수</label>
-                    <input type="text" value={newRecord.unitNumber} onChange={e => setNewRecord({...newRecord, unitNumber: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 focus:outline-none font-bold text-slate-800" placeholder="2005" />
-                  </div>
-                  <div className="relative">
-                    <label className="text-[10px] font-black text-slate-400 absolute -top-2 left-4 bg-white px-1 z-10">수취인</label>
-                    <input type="text" value={newRecord.residentName} onChange={e => setNewRecord({...newRecord, residentName: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 focus:outline-none font-bold text-slate-800" placeholder="성함" />
-                  </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-slate-400 uppercase ml-2">이름</label>
+                  <input type="text" placeholder="수취인명" value={newRecord.residentName} onChange={e => setNewRecord({...newRecord, residentName: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 outline-none font-bold" />
                 </div>
               </div>
-              <div>
-                <label className="text-[10px] font-black text-slate-400 mb-3 block">거주 상태</label>
+              <div className="space-y-2">
+                <label className="text-[10px] font-black text-slate-400 uppercase ml-2">배달 상태</label>
                 <div className="grid grid-cols-2 gap-2">
-                  {Object.values(ResidenceStatus).slice(0, 4).map(status => (
-                    <button key={status} onClick={() => setNewRecord({...newRecord, status})} className={`py-2 rounded-xl text-[10px] font-black border-2 transition-all ${newRecord.status === status ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-100 text-slate-500'}`}>{status}</button>
+                  {Object.values(ResidenceStatus).map(status => (
+                    <button key={status} onClick={() => setNewRecord({...newRecord, status})} className={`py-3 rounded-xl text-xs font-bold border-2 transition-all ${newRecord.status === status ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-100 text-slate-500'}`}>{status}</button>
                   ))}
                 </div>
               </div>
-              <textarea rows={2} value={newRecord.memo} onChange={e => setNewRecord({...newRecord, memo: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 focus:outline-none text-sm font-medium text-slate-700" placeholder="메모 (선택사항)"></textarea>
-              <div className="flex gap-3 pt-2">
-                <button onClick={() => setIsAddModalOpen(false)} className="flex-1 py-4 bg-slate-50 text-slate-500 font-black rounded-2xl text-sm">취소</button>
-                <button onClick={() => addOrUpdateRecord({...newRecord, id: newRecord.id || Math.random().toString(36).substr(2, 9), lastUpdated: new Date().toISOString().split('T')[0]} as DeliveryRecord)} className="flex-[2] py-4 bg-indigo-600 text-white font-black rounded-2xl text-sm shadow-xl active:scale-95 transition-transform">저장하기</button>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase ml-2">메모</label>
+                <textarea placeholder="특이사항 입력" value={newRecord.memo} onChange={e => setNewRecord({...newRecord, memo: e.target.value})} className="w-full border-2 border-slate-100 rounded-2xl p-4 focus:border-indigo-500 outline-none font-medium h-24 resize-none" />
               </div>
+            </div>
+            <div className="flex gap-3 pt-2">
+              <button onClick={() => setIsAddModalOpen(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 font-black rounded-2xl">취소</button>
+              <button onClick={() => addOrUpdateRecord({...newRecord, id: newRecord.id || Math.random().toString(36).substr(2, 9), lastUpdated: new Date().toISOString().split('T')[0]} as DeliveryRecord)} className="flex-[2] py-4 bg-indigo-600 text-white font-black rounded-2xl shadow-lg active:scale-95 transition-transform">저장하기</button>
             </div>
           </div>
         </div>
       )}
 
-      <div className="fixed bottom-0 w-full max-w-md pointer-events-none">
-        <div className="relative p-6 flex justify-center items-end">
-          <nav className="bg-slate-900/95 backdrop-blur-2xl pointer-events-auto flex items-center justify-around w-full py-4 px-4 rounded-[2.5rem] shadow-2xl border border-white/10 ring-1 ring-white/10">
-            <button onClick={() => setViewMode('database')} className={`flex flex-col items-center gap-1.5 ${viewMode === 'database' ? 'text-indigo-400' : 'text-slate-500'}`}>
-              <Database className="w-5 h-5" /><span className="text-[8px] font-black uppercase tracking-widest">전체DB</span>
-            </button>
-            <div className="w-12 h-12"></div>
-            <button className="flex flex-col items-center gap-1.5 text-slate-500 opacity-50 cursor-not-allowed">
-              <Users className="w-5 h-5" /><span className="text-[8px] font-black uppercase tracking-widest">분류</span>
-            </button>
-          </nav>
-          <button onClick={() => { setNewRecord({ status: ResidenceStatus.UNKNOWN, buildingName: '', unitNumber: '', residentName: '', lastUpdated: new Date().toISOString().split('T')[0] }); setIsAddModalOpen(true); }} className="absolute bottom-10 pointer-events-auto bg-indigo-600 text-white p-5 rounded-full shadow-2xl border-4 border-slate-900 active:scale-90 transition-all z-20 hover:bg-indigo-500">
-            <Plus className="w-8 h-8" strokeWidth={3} />
+      <footer className="fixed bottom-0 w-full max-w-md bg-white border-t p-4 pb-8 z-20">
+        <div className="flex justify-around items-center">
+          <button onClick={() => setViewMode('database')} className={`flex flex-col items-center gap-1 ${viewMode === 'database' ? 'text-indigo-600' : 'text-slate-400'}`}>
+            <Database className="w-6 h-6" />
+            <span className="text-[10px] font-bold">전체 DB</span>
+          </button>
+          <div className="w-12"></div> {/* Spacer for floating button */}
+          <button onClick={() => setViewMode('search')} className={`flex flex-col items-center gap-1 ${viewMode === 'search' ? 'text-indigo-600' : 'text-slate-400'}`}>
+            <Search className="w-6 h-6" />
+            <span className="text-[10px] font-bold">상세 검색</span>
           </button>
         </div>
-      </div>
+        <button 
+          onClick={() => {
+            setNewRecord({ status: ResidenceStatus.UNKNOWN, buildingName: '', unitNumber: '', residentName: '', lastUpdated: new Date().toISOString().split('T')[0], memo: '' });
+            setIsAddModalOpen(true);
+          }}
+          className="absolute -top-6 left-1/2 -translate-x-1/2 bg-indigo-600 text-white p-4 rounded-full shadow-xl border-4 border-white active:scale-90 transition-all"
+        >
+          <Plus className="w-8 h-8" />
+        </button>
+      </footer>
     </div>
   );
 };
